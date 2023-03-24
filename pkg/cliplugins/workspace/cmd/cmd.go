@@ -155,6 +155,28 @@ func New(streams genericclioptions.IOStreams) (*cobra.Command, error) {
 	}
 	createWorkspaceOpts.BindFlags(createCmd)
 
+	deleteWorkspaceOpts := plugin.NewDeleteWorkspaceOptions(streams)
+	deleteCmd := &cobra.Command{
+		Use:          "delete",
+		Short:        "Deletes an existing workspace",
+		Example:      "kcp workspace delete <workspace name>",
+		SilenceUsage: true,
+		Args:         cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return cmd.Help()
+			}
+			if err := deleteWorkspaceOpts.Validate(); err != nil {
+				return err
+			}
+			if err := deleteWorkspaceOpts.Complete(args); err != nil {
+				return err
+			}
+			return deleteWorkspaceOpts.Run(cmd.Context())
+		},
+	}
+	deleteWorkspaceOpts.BindFlags(deleteCmd)
+
 	createContextOpts := plugin.NewCreateContextOptions(streams)
 	createContextCmd := &cobra.Command{
 		Use:          "create-context [<context-name>] [--overwrite]",
@@ -201,6 +223,7 @@ func New(streams genericclioptions.IOStreams) (*cobra.Command, error) {
 	cmd.AddCommand(treeCmd)
 	cmd.AddCommand(currentCmd)
 	cmd.AddCommand(createCmd)
+	cmd.AddCommand(deleteCmd)
 	cmd.AddCommand(createContextCmd)
 	return cmd, nil
 }

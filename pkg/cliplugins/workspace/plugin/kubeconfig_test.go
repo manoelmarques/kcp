@@ -267,6 +267,120 @@ func TestCreate(t *testing.T) {
 	}
 }
 
+func TestDelete(t *testing.T) {
+	tests := []struct {
+		name   string
+		config clientcmdapi.Config
+
+		existingObjects map[logicalcluster.Name][]string
+
+		param string
+
+		wantStdout []string
+		wantErrors []string
+		wantErr    bool
+	}{
+		{
+			name: "delete for existing workspace",
+			config: clientcmdapi.Config{CurrentContext: "test",
+				Contexts:  map[string]*clientcmdapi.Context{"test": {Cluster: "test", AuthInfo: "test"}},
+				Clusters:  map[string]*clientcmdapi.Cluster{"test": {Server: "https://test/clusters/root:foo"}},
+				AuthInfos: map[string]*clientcmdapi.AuthInfo{"test": {Token: "test"}},
+			},
+			existingObjects: map[logicalcluster.Name][]string{
+				logicalcluster.Name("root:foo"): {"bar"},
+			},
+			param:      "bar",
+			wantStdout: []string{"Waiting for Workspace \"bar\" to be deleted...\nWorkspace \"bar\" deleted.\n"},
+		},
+		{
+			name: "delete for non existent workspace",
+			config: clientcmdapi.Config{CurrentContext: "test",
+				Contexts:  map[string]*clientcmdapi.Context{"test": {Cluster: "test", AuthInfo: "test"}},
+				Clusters:  map[string]*clientcmdapi.Cluster{"test": {Server: "https://test/clusters/root:foo"}},
+				AuthInfos: map[string]*clientcmdapi.AuthInfo{"test": {Token: "test"}},
+			},
+			existingObjects: map[logicalcluster.Name][]string{
+				logicalcluster.Name("root:foo"): {"bar"},
+			},
+			param:      "dummy",
+			wantErrors: []string{"\"dummy\" not found"},
+			wantErr:    true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cluster := tt.config.Clusters[tt.config.Contexts[tt.config.CurrentContext].Cluster]
+			u := parseURLOrDie(cluster.Server)
+			currentClusterName := logicalcluster.NewPath(strings.TrimPrefix(u.Path, "/clusters/"))
+			u.Path = ""
+
+			objs := []runtime.Object{}
+			for lcluster, names := range tt.existingObjects {
+				for _, name := range names {
+					obj := &tenancyv1alpha1.Workspace{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:        name,
+							Annotations: map[string]string{logicalcluster.AnnotationKey: lcluster.String()},
+						},
+						Spec: tenancyv1alpha1.WorkspaceSpec{
+							Type: tenancyv1alpha1.WorkspaceTypeReference{
+								Name: "universal",
+								Path: "root",
+							},
+						},
+					}
+					obj.Status.Phase = corev1alpha1.LogicalClusterPhaseReady
+					obj.Spec.URL = fmt.Sprintf("https://test%s", lcluster.Path().Join(name).RequestPath())
+					objs = append(objs, obj)
+				}
+			}
+			client := kcpfakeclient.NewSimpleClientset(objs...)
+			client.PrependReactor("delete", "workspaces", func(action kcptesting.Action) (handled bool, ret runtime.Object, err error) {
+				deleteAction := action.(kcptesting.DeleteAction)
+				ns := deleteAction.GetNamespace()
+				ws := deleteAction.GetName()
+				if err := client.Tracker().Cluster(currentClusterName).Delete(tenancyv1alpha1.SchemeGroupVersion.WithResource("workspaces"), ns, ws); err != nil {
+					return false, nil, err
+				}
+				return true, nil, nil
+			})
+
+			streams, _, stdout, stderr := genericclioptions.NewTestIOStreams()
+			opts := NewDeleteWorkspaceOptions(streams)
+			opts.Name = tt.param
+			opts.kcpClusterClient = client
+			opts.ClientConfig = clientcmd.NewDefaultClientConfig(*tt.config.DeepCopy(), nil)
+			err := opts.Run(context.Background())
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+
+			t.Logf("stdout:\n%s", stdout.String())
+			t.Logf("stderr:\n%s", stderr.String())
+
+			for _, s := range tt.wantStdout {
+				require.Contains(t, stdout.String(), s)
+			}
+			if err != nil {
+				for _, s := range tt.wantErrors {
+					require.Contains(t, err.Error(), s)
+				}
+			} else {
+				if _, err := client.Tracker().Cluster(currentClusterName).Get(tenancyv1alpha1.SchemeGroupVersion.WithResource("workspaces"), "", tt.param); err != nil {
+					if !errors.IsNotFound(err) {
+						t.Errorf("unexpected workspace get command: %v", err)
+					}
+				} else {
+					t.Errorf("Workspace %q not deleted", tt.param)
+				}
+			}
+		})
+	}
+}
+
 func TestUse(t *testing.T) {
 	homeWorkspaceLogicalCluster := logicalcluster.NewPath("root:users:ab:cd:user-name")
 	tests := []struct {

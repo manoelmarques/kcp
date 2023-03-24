@@ -642,6 +642,99 @@ func (o *CreateWorkspaceOptions) Run(ctx context.Context) error {
 	return nil
 }
 
+// DeleteWorkspaceOptions contains options for deleting an existing workspace.
+type DeleteWorkspaceOptions struct {
+	*base.Options
+
+	// Name is the name of the workspace to delete.
+	Name string
+
+	// DeleteWaitTimeout is how long to wait for the workspace to be deleted before returning control to the user.
+	DeleteWaitTimeout time.Duration
+
+	kcpClusterClient kcpclientset.ClusterInterface
+}
+
+// NewDeleteWorkspaceOptions returns a new DeleteWorkspaceOptions.
+func NewDeleteWorkspaceOptions(streams genericclioptions.IOStreams) *DeleteWorkspaceOptions {
+	return &DeleteWorkspaceOptions{
+		Options: base.NewOptions(streams),
+
+		DeleteWaitTimeout: time.Minute * 5,
+	}
+}
+
+// Complete ensures all dynamically populated fields are initialized.
+func (o *DeleteWorkspaceOptions) Complete(args []string) error {
+	if err := o.Options.Complete(); err != nil {
+		return err
+	}
+
+	if len(args) > 0 {
+		o.Name = args[0]
+	}
+
+	kcpClusterClient, err := newKCPClusterClient(o.ClientConfig)
+	if err != nil {
+		return err
+	}
+	o.kcpClusterClient = kcpClusterClient
+
+	return nil
+}
+
+// Validate validates the DeleteWorkspaceOptions are complete and usable.
+func (o *DeleteWorkspaceOptions) Validate() error {
+	return o.Options.Validate()
+}
+
+// BindFlags binds fields to cmd's flagset.
+func (o *DeleteWorkspaceOptions) BindFlags(cmd *cobra.Command) {
+	o.Options.BindFlags(cmd)
+}
+
+// Run deletes a workspace.
+func (o *DeleteWorkspaceOptions) Run(ctx context.Context) error {
+	config, err := o.ClientConfig.ClientConfig()
+	if err != nil {
+		return err
+	}
+	_, currentClusterName, err := pluginhelpers.ParseClusterURL(config.Host)
+	if err != nil {
+		return fmt.Errorf("current URL %q does not point to a workspace", config.Host)
+	}
+
+	err = o.kcpClusterClient.Cluster(currentClusterName).TenancyV1alpha1().Workspaces().Delete(ctx, o.Name, metav1.DeleteOptions{})
+	if err != nil {
+		return err
+	}
+
+	if o.DeleteWaitTimeout > 0 {
+		if _, err := fmt.Fprintf(o.Out, "Waiting for Workspace %q to be deleted...\n", o.Name); err != nil {
+			return err
+		}
+
+		//  Wait until it is deleted.
+		if err := wait.PollImmediate(time.Millisecond*100, o.DeleteWaitTimeout, func() (bool, error) {
+			if _, err := o.kcpClusterClient.Cluster(currentClusterName).TenancyV1alpha1().Workspaces().Get(ctx, o.Name, metav1.GetOptions{}); err != nil {
+				if apierrors.IsNotFound(err) {
+					return true, nil
+				}
+				return false, err
+			}
+			return false, nil
+		}); err != nil {
+			return err
+		}
+	}
+
+	if _, err := fmt.Fprintf(o.Out, "Workspace %q deleted.\n", o.Name); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // CreateContextOptions contains options for creating or updating a kubeconfig context.
 type CreateContextOptions struct {
 	*base.Options
